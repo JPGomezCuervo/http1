@@ -11,10 +11,11 @@ const (
 )
 
 type Lexer struct {
-        input string
-        pos   int
-        start int
-        Ch    byte
+        input   string
+        pos     int
+        start   int
+        Ch      byte
+        Tks     []*token.Token
 }
 
 func New(input string) *Lexer {
@@ -23,7 +24,7 @@ func New(input string) *Lexer {
         return l
 }
 
-func (l *Lexer) readChar() {
+func (l *Lexer) readChar() byte {
         if l.pos >= len(l.input) {
                 l.Ch = 0
         } 
@@ -31,6 +32,8 @@ func (l *Lexer) readChar() {
         l.start = l.pos
         l.Ch = l.input[l.start]
         l.pos++
+
+        return l.Ch
 }
 
 func (l *Lexer) backupChar() {
@@ -58,6 +61,17 @@ func (l *Lexer) readWord() string {
         return l.input[start:l.pos]
 }
 
+func (l *Lexer) readPath() string {
+        start := l.start
+
+        for l.Ch != ' ' && l.Ch != '\n' && l.Ch != 0 {
+                l.readChar()
+        }
+        l.backupChar()
+
+        return l.input[start:l.pos]
+}
+
 func isSeparator(c byte) bool {
 
         switch c {
@@ -68,49 +82,64 @@ func isSeparator(c byte) bool {
         }
 }
 
-func (l *Lexer) mkToken(tp token.TokenType, lit string) *token.Token {
-        return &token.Token{Typ: tp, Lit: lit}
+func isLetter(c byte) bool {
+        if c >= 'a' && c <= 'z' { return true }
+        if c >= 'A' && c <= 'Z' { return true }
+        return false
 }
 
-func (l *Lexer) requestLine() ([]*token.Token, StateType) {
-        var tks []*token.Token
-        var prev token.TokenType
+func isEndLine (c byte) bool {
+        if c == '\n' || c == '\r' { return true }
+        return false
+}
 
-        for l.Ch != '\n' && l.Ch != 0 {
-                if l.Ch == ' ' {
-                        tks = append(tks, l.mkToken(token.TpSP, string(l.Ch)))
-                        prev = token.TpSP
-                } else if l.Ch == '/' {
-                        if l.peek() >= '0' && l.peek() <= '9' && prev == token.TpProtocol {
-                                l.readChar()
-                                s := l.readWord()
-                                tks = append(tks, l.mkToken(token.TpVersion, s))
-                                prev = token.TpVersion
+func (l *Lexer) appendToken(tp token.TokenType, lit string) *token.Token {
+        t := &token.Token{Typ: tp, Lit: lit}
+        l.Tks = append(l.Tks, t)
+        return t
+}
 
-                        } else if prev == token.TpSP {
-                                l.readChar()
-                                s := l.readWord()
-                                tks = append(tks, l.mkToken(token.TpUri, s))
-                                prev = token.TpUri
+func (l *Lexer) mkToken(c byte) bool {
+        if isSeparator(c) {
+                switch c {
+                case '/':
+                        s := l.readPath()
+                        prev := l.Tks[len(l.Tks)-1].Typ
+
+                        if prev == token.TpProtocol { 
+                                l.appendToken(token.TpVersion, s)
+                        } else if prev == token.TpMethod {
+                                l.appendToken(token.TpUri, s)
                         }
-
-                } else {
-                        s := l.readWord()
-
-                        switch s {
-                        case "PUT", "GET", "DELETE", "POST":
-                                tks = append(tks, l.mkToken(token.TpMethod, s))
-                                prev = token.TpMethod
-                        case "HTTP":
-                                tks = append(tks, l.mkToken(token.TpProtocol, s))
-                                prev = token.TpProtocol
-                        default:
-                                /* lanzar error */
-                        }
+                        /* check the las if */
+                case '\n':
+                        return false
                 }
-                l.readChar()
         }
-        return tks, stateEOF
+
+        if isLetter(c) {
+                s := l.readWord()
+                switch s {
+                case "PUT", "GET", "DELETE", "POST":
+                        l.appendToken(token.TpMethod, s)
+                case "HTTP":
+                        l.appendToken(token.TpProtocol, s)
+                default:
+                        return false
+                }
+        }
+        return true
+}
+
+/* rethink this function */
+func (l *Lexer) requestLine() (StateType) {
+
+        for c := l.Ch; c != 0 && !isEndLine(c); c = l.readChar() {
+                if c == ' ' { continue }
+                l.mkToken(c)
+        }
+
+        return stateEOF
 }
 
 func (l *Lexer) RunLexer() []*token.Token {
@@ -119,10 +148,8 @@ func (l *Lexer) RunLexer() []*token.Token {
         for state := stateRequestLine; state != stateEOF; {
                 switch state {
                 case stateRequestLine:
-                        tk, nextState := l.requestLine()
-                        tokens = append(tokens, tk...)
+                        nextState := l.requestLine()
                         state = nextState
-
                 }
         }
         return tokens
